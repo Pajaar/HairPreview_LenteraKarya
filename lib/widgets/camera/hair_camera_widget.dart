@@ -31,7 +31,9 @@ class _HairCameraWidgetState extends State<HairCameraWidget> {
   Float32List? _hairMask;
   int _maskWidth = 0;
   int _maskHeight = 0;
-  Size _sourceImageSize = Size.zero;
+
+  Uint8List? _capturedImageBytes;
+  Size _capturedImageSize = Size.zero;
 
   @override
   void initState() {
@@ -86,14 +88,6 @@ class _HairCameraWidgetState extends State<HairCameraWidget> {
 
       _controller = controller;
 
-      final previewSize = controller.value.previewSize;
-      if (previewSize != null) {
-        _sourceImageSize = Size(
-          previewSize.height,
-          previewSize.width,
-        );
-      }
-
       setState(() {
         _isLoading = false;
       });
@@ -121,24 +115,24 @@ class _HairCameraWidgetState extends State<HairCameraWidget> {
       final file = await controller.takePicture();
       final imageBytes = await file.readAsBytes();
 
+      final decoded = await decodeImageFromList(imageBytes);
+
+      final imageSize = Size(
+        decoded.width.toDouble(),
+        decoded.height.toDouble(),
+      );
+
       final result = await _hairSegmentationService.segmentHair(imageBytes);
 
       if (!mounted) return;
 
       if (result != null) {
-        final previewSize = controller.value.previewSize;
-
         setState(() {
+          _capturedImageBytes = imageBytes;
+          _capturedImageSize = imageSize;
           _hairMask = result.hairMask;
           _maskWidth = result.width;
           _maskHeight = result.height;
-
-          if (previewSize != null) {
-            _sourceImageSize = Size(
-              previewSize.height,
-              previewSize.width,
-            );
-          }
         });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -164,10 +158,74 @@ class _HairCameraWidgetState extends State<HairCameraWidget> {
 
   void _clearMask() {
     setState(() {
+      _capturedImageBytes = null;
+      _capturedImageSize = Size.zero;
       _hairMask = null;
       _maskWidth = 0;
       _maskHeight = 0;
     });
+  }
+
+  Widget _buildCapturedResult() {
+    final imageBytes = _capturedImageBytes;
+    if (imageBytes == null || _capturedImageSize == Size.zero) {
+      return const SizedBox.shrink();
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final viewportSize = Size(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
+
+        final fitted = applyBoxFit(
+          BoxFit.cover,
+          _capturedImageSize,
+          viewportSize,
+        );
+
+        return ClipRect(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _capturedImageSize.width,
+                  height: _capturedImageSize.height,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.memory(
+                        imageBytes,
+                        fit: BoxFit.fill,
+                      ),
+                      HairMaskOverlay(
+                        hairMask: _hairMask,
+                        maskWidth: _maskWidth,
+                        maskHeight: _maskHeight,
+                        color: widget.hairState.color,
+                        sourceImageSize: _capturedImageSize,
+                        forceExactImageSpace: true,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPreview() {
+    if (_capturedImageBytes != null) {
+      return _buildCapturedResult();
+    }
+
+    return CameraPreview(_controller!);
   }
 
   @override
@@ -203,14 +261,7 @@ class _HairCameraWidgetState extends State<HairCameraWidget> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        CameraPreview(_controller!),
-        HairMaskOverlay(
-          hairMask: _hairMask,
-          maskWidth: _maskWidth,
-          maskHeight: _maskHeight,
-          color: widget.hairState.color,
-          sourceImageSize: _sourceImageSize,
-        ),
+        _buildPreview(),
         Positioned(
           top: 18,
           left: 18,
@@ -224,7 +275,7 @@ class _HairCameraWidgetState extends State<HairCameraWidget> {
               borderRadius: BorderRadius.circular(18),
             ),
             child: Text(
-              _hairMask != null ? 'Hair: detected' : 'Hair: not captured',
+              _hairMask != null ? 'Hair: detected' : 'Hair: ready',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 12,
@@ -251,7 +302,9 @@ class _HairCameraWidgetState extends State<HairCameraWidget> {
               Expanded(
                 child: OutlinedButton(
                   onPressed: _clearMask,
-                  child: const Text('Clear'),
+                  child: Text(
+                    _capturedImageBytes != null ? 'Retake' : 'Clear',
+                  ),
                 ),
               ),
             ],
